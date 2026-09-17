@@ -1,0 +1,58 @@
+name: build
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Space-separated top-level test names; empty runs the full suite"
+        required: false
+        default: ""
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GOTOOLCHAIN: auto
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: false
+      - name: Stage the module tree
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/modsrc"
+          tar -c --exclude=./.git --exclude=./.github . | tar -x -C "${RUNNER_TEMP}/modsrc"
+          mkdir -p build_output
+          ls -a "${RUNNER_TEMP}/modsrc"
+      - name: Build module zip
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/zipper"
+          cp .github/tools/create_mod.go "${RUNNER_TEMP}/zipper/"
+          cd "${RUNNER_TEMP}/zipper"
+          go mod init example.com/zipper
+          go get golang.org/x/mod
+          go run ./create_mod.go golang.org/x/net v0.45.0 "${RUNNER_TEMP}/modsrc" "${GITHUB_WORKSPACE}/build_output/v0.45.0.zip"
+      - name: Build
+        shell: bash
+        run: go build ./...
+      - name: Test
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            go test -v -run "^($(echo "${{ inputs.test-filter }}" | tr ' ' '|'))$" ./... 2>&1 | tee /tmp/scoped.log
+            for t in ${{ inputs.test-filter }}; do
+              grep -qE "^=== RUN[[:space:]]+${t}(/|$)" /tmp/scoped.log || exit 1
+            done
+          else
+            go test ./...
+          fi
+      - name: Upload module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: build_output/v0.45.0.zip
+          if-no-files-found: error
